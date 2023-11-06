@@ -40,7 +40,38 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     _cnt = 0
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header, logger=logger):
 
-        samples = samples.to(device)
+        samples = samples.to(device)  #{'tensors.shape': torch.Size([4, 3, 768, 1156]), 'mask.shape': torch.Size([4, 768, 1156])}
+
+        # [{'boxes': tensor([[0.4978, 0.4835, 0.7010, 0.7377],
+        # [0.7455, 0.8129, 0.5090, 0.1191]], device='cuda:0'), 
+        # 'labels': tensor([ 1, 35], device='cuda:0'), 
+        # 'image_id': tensor([46038], device='cuda:0'), 
+        # 'area': tensor([182474.8438,  20575.4863], device='cuda:0'), 
+        # 'iscrowd': tensor([0, 0], device='cuda:0'), 
+        # 'orig_size': tensor([425, 640], device='cuda:0'), 
+        # 'size': tensor([ 768, 1156], device='cuda:0')}, 
+        # {'boxes': tensor([[0.4539, 0.6629, 0.3266, 0.5753],
+        # [0.2326, 0.6427, 0.1504, 0.0764]], device='cuda:0'), 
+        # 'labels': tensor([ 1, 43], device='cuda:0'), 
+        # 'image_id': tensor([363163], device='cuda:0'), 
+        # 'area': tensor([51462.3594,  3147.2085], device='cuda:0'), 
+        # 'iscrowd': tensor([0, 0], device='cuda:0'), 
+        # 'orig_size': tensor([427, 640], device='cuda:0'), 
+        # 'size': tensor([512, 535], device='cuda:0')}, 
+        # {'boxes': tensor([[0.5331, 0.5870, 0.6060, 0.5975]], device='cuda:0'), 
+        #  'labels': tensor([22], device='cuda:0'), 
+        #  'image_id': tensor([513295], device='cuda:0'), 
+        #  'area': tensor([168868.5312], device='cuda:0'), 
+        #  'iscrowd': tensor([0], device='cuda:0'), 
+        #  'orig_size': tensor([480, 640], device='cuda:0'), 
+        #  'size': tensor([736, 981], device='cuda:0')}, 
+        #  {'boxes': tensor([[0.7698, 0.0165, 0.2226, 0.0329]], device='cuda:0'), 
+        #   'labels': tensor([38], device='cuda:0'), 'image_id': 
+        #   tensor([294228], device='cuda:0'), 
+        #   'area': tensor([2846.3035], device='cuda:0'), 
+        #   'iscrowd': tensor([0], device='cuda:0'), 
+        #   'orig_size': tensor([640, 326], device='cuda:0'), 
+        #   'size': tensor([674, 576], device='cuda:0')}]
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
         with torch.cuda.amp.autocast(enabled=args.amp):
@@ -48,6 +79,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 outputs = model(samples, targets)
             else:
                 outputs = model(samples)
+            #outputs{
+            #        predict_logit:torch.Size([bs, 300, 91])
+            #        pred_boxes:torch.Size([bs, 300, 4])
+            #    长度为5的队列  元素是字典    aux_outputs:[{predict_logit:torch.Size([bs, 300, 91]), pred_boxes:torch.Size([bs, 300, 4])},{...}]
+            # }
         
             loss_dict = criterion(outputs, targets)
             weight_dict = criterion.weight_dict

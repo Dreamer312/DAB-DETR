@@ -88,7 +88,7 @@ class BackboneBase(nn.Module):
         for name, x in xs.items():
             m = tensor_list.mask
             assert m is not None
-            mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
+            mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0] #将原图像大小的mask压缩到和对应特征图一个大小 
             out[name] = NestedTensor(x, mask)
         return out
 
@@ -116,7 +116,7 @@ class Joiner(nn.Sequential):
         super().__init__(backbone, position_embedding)
 
     def forward(self, tensor_list: NestedTensor):
-        xs = self[0](tensor_list)
+        xs = self[0](tensor_list) #它首先通过索引self[0]调用backbone网络，传入tensor_list，得到一个字典xs，字典的键是层的名称，值是对应层的输出。
         out: List[NestedTensor] = []
         pos = []
         for name, x in xs.items():

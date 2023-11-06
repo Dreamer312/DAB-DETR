@@ -80,8 +80,8 @@ class PositionEmbeddingSineHW(nn.Module):
         mask = tensor_list.mask
         assert mask is not None
         not_mask = ~mask
-        y_embed = not_mask.cumsum(1, dtype=torch.float32)
-        x_embed = not_mask.cumsum(2, dtype=torch.float32)
+        y_embed = not_mask.cumsum(1, dtype=torch.float32)  # torch.Size([bs, 24, 37])
+        x_embed = not_mask.cumsum(2, dtype=torch.float32)  # torch.Size([bs, 24, 37])
 
         # import ipdb; ipdb.set_trace()
 
@@ -98,13 +98,13 @@ class PositionEmbeddingSineHW(nn.Module):
         dim_ty = self.temperatureH ** (2 * (dim_ty // 2) / self.num_pos_feats)
         pos_y = y_embed[:, :, :, None] / dim_ty
 
-        pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
-        pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3) #torch.Size([4, 24, 37, 128])
+        pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3) #torch.Size([4, 24, 37, 128])
         pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
 
         # import ipdb; ipdb.set_trace()
 
-        return pos
+        return pos #torch.Size([bs, 256, 24, 37])
 
 class PositionEmbeddingLearned(nn.Module):
     """

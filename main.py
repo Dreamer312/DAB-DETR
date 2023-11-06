@@ -25,7 +25,7 @@ from datasets import build_dataset, get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
 from models import build_DABDETR, build_dab_deformable_detr
 from util.utils import clean_state_dict
-
+from torchsummary import summary
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DAB-DETR', add_help=False)
@@ -155,7 +155,7 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true', help="eval only. w/o Training.")
-    parser.add_argument('--num_workers', default=10, type=int)
+    parser.add_argument('--num_workers', default=16, type=int)
     parser.add_argument('--debug', action='store_true', 
                         help="For debug only. It will perform only a few steps during trainig and val.")
     parser.add_argument('--find_unused_params', action='store_true')
@@ -167,7 +167,7 @@ def get_args_parser():
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
-                        help='number of distributed processes')
+                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     parser.add_argument('--rank', default=0, type=int,
                         help='number of distributed processes')
@@ -203,8 +203,12 @@ def main(args):
         with open(save_json_path, 'w') as f:
             json.dump(vars(args), f, indent=2)
         logger.info("Full config saved to {}".format(save_json_path))
+
+    #args.world_size = int(os.environ['WORLD_SIZE'])
     logger.info('world size: {}'.format(args.world_size))
     logger.info('rank: {}'.format(args.rank))
+
+    #args.local_rank = int(os.environ['LOCAL_RANK'])
     logger.info('local_rank: {}'.format(args.local_rank))
     logger.info("args: " + str(args) + '\n')
 
@@ -222,8 +226,10 @@ def main(args):
 
     # build model
     model, criterion, postprocessors = build_model_main(args)
+    # model = torch.compile(model)
     wo_class_error = False
     model.to(device)
+    print(model)
 
     model_without_ddp = model
     if args.distributed:

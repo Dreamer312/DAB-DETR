@@ -39,26 +39,26 @@ def gen_sineembed_for_position(pos_tensor, d_model=256):
     # n_query, bs, _ = pos_tensor.size()
     # sineembed_tensor = torch.zeros(n_query, bs, 256)
     scale = 2 * math.pi
-    dim_t = torch.arange(d_model // 2, dtype=torch.float32, device=pos_tensor.device)
+    dim_t = torch.arange(d_model // 2, dtype=torch.float32, device=pos_tensor.device) # 0到127
     dim_t = 10000 ** (2 * (dim_t // 2) / (d_model // 2))
-    x_embed = pos_tensor[:, :, 0] * scale
-    y_embed = pos_tensor[:, :, 1] * scale
+    x_embed = pos_tensor[:, :, 0] * scale # torch.Size([300, bs)
+    y_embed = pos_tensor[:, :, 1] * scale # torch.Size([300, bs])
     pos_x = x_embed[:, :, None] / dim_t
     pos_y = y_embed[:, :, None] / dim_t
-    pos_x = torch.stack((pos_x[:, :, 0::2].sin(), pos_x[:, :, 1::2].cos()), dim=3).flatten(2)
-    pos_y = torch.stack((pos_y[:, :, 0::2].sin(), pos_y[:, :, 1::2].cos()), dim=3).flatten(2)
+    pos_x = torch.stack((pos_x[:, :, 0::2].sin(), pos_x[:, :, 1::2].cos()), dim=3).flatten(2) #torch.Size([300, bs, 128])
+    pos_y = torch.stack((pos_y[:, :, 0::2].sin(), pos_y[:, :, 1::2].cos()), dim=3).flatten(2) #torch.Size([300, bs, 128])
     if pos_tensor.size(-1) == 2:
         pos = torch.cat((pos_y, pos_x), dim=2)
     elif pos_tensor.size(-1) == 4:
         w_embed = pos_tensor[:, :, 2] * scale
         pos_w = w_embed[:, :, None] / dim_t
-        pos_w = torch.stack((pos_w[:, :, 0::2].sin(), pos_w[:, :, 1::2].cos()), dim=3).flatten(2)
+        pos_w = torch.stack((pos_w[:, :, 0::2].sin(), pos_w[:, :, 1::2].cos()), dim=3).flatten(2) #torch.Size([300, bs, 128])
 
         h_embed = pos_tensor[:, :, 3] * scale
         pos_h = h_embed[:, :, None] / dim_t
         pos_h = torch.stack((pos_h[:, :, 0::2].sin(), pos_h[:, :, 1::2].cos()), dim=3).flatten(2)
 
-        pos = torch.cat((pos_y, pos_x, pos_w, pos_h), dim=2)
+        pos = torch.cat((pos_y, pos_x, pos_w, pos_h), dim=2) #torch.Size([300, bs, 512])
     else:
         raise ValueError("Unknown pos_tensor shape(-1):{}".format(pos_tensor.size(-1)))
     return pos
@@ -113,21 +113,24 @@ class Transformer(nn.Module):
 
     def forward(self, src, mask, refpoint_embed, pos_embed):
         # flatten NxCxHxW to HWxNxC
-        bs, c, h, w = src.shape
-        src = src.flatten(2).permute(2, 0, 1)
-        pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
-        refpoint_embed = refpoint_embed.unsqueeze(1).repeat(1, bs, 1)
-        mask = mask.flatten(1)        
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        bs, c, h, w = src.shape #torch.Size([bs, 256, 24, 37])
+        src = src.flatten(2).permute(2, 0, 1) # torch.Size([888, bs, 256])
+        pos_embed = pos_embed.flatten(2).permute(2, 0, 1) # torch.Size([888, bs, 256])
+        refpoint_embed = refpoint_embed.unsqueeze(1).repeat(1, bs, 1) #[300, bs, 4]
+        mask = mask.flatten(1)   # torch.Size([bs,888])     
+        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed) ## torch.Size([888, bs, 256])
 
         # query_embed = gen_sineembed_for_position(refpoint_embed)
-        num_queries = refpoint_embed.shape[0]
+        num_queries = refpoint_embed.shape[0] #300
         if self.num_patterns == 0:
-            tgt = torch.zeros(num_queries, bs, self.d_model, device=refpoint_embed.device)
+            tgt = torch.zeros(num_queries, bs, self.d_model, device=refpoint_embed.device) #torch.Size([300, bs, 256])
         else:
             tgt = self.patterns.weight[:, None, None, :].repeat(1, self.num_queries, bs, 1).flatten(0, 1) # n_q*n_pat, bs, d_model
             refpoint_embed = refpoint_embed.repeat(self.num_patterns, 1, 1) # n_q*n_pat, bs, d_model
             # import ipdb; ipdb.set_trace()
+
+        # hs torch.Size([6, bs, 300, 256]) 6应该是6层
+        # references torch.Size([6, bs, 300, 4])
         hs, references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                           pos=pos_embed, refpoints_unsigmoid=refpoint_embed)
         return hs, references
@@ -151,7 +154,7 @@ class TransformerEncoder(nn.Module):
 
         for layer_id, layer in enumerate(self.layers):
             # rescale the content and pos sim
-            pos_scales = self.query_scale(output)
+            pos_scales = self.query_scale(output) # torch.Size([888, bs, 256])
             output = layer(output, src_mask=mask,
                            src_key_padding_mask=src_key_padding_mask, pos=pos*pos_scales)
 
@@ -189,17 +192,19 @@ class TransformerDecoder(nn.Module):
         
         self.ref_point_head = MLP(query_dim // 2 * d_model, d_model, d_model, 2)
         
-        self.bbox_embed = None
+        self.bbox_embed = None #MLP(hidden_dim, hidden_dim, 4, 3) 在DAB init完成初始化
         self.d_model = d_model
         self.modulate_hw_attn = modulate_hw_attn
         self.bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
 
-
+        # 2层 MLP，输出维度：2，分别用于 x, y 坐标
         if modulate_hw_attn:
             self.ref_anchor_head = MLP(d_model, d_model, 2, 2)
 
-        
+        # 是否要在每层计算交叉注意力前将位置 query 与内容 query 结合(相加)
+        # 相加前，会将位置 query 经过 projection(MLP)，即如下的 ca_qpos_proj
         if not keep_query_pos:
+            # 第一层由于内容 query 没有位置信息，是必须会相加的，因此这里排除了第一层
             for layer_id in range(num_layers - 1):
                 self.layers[layer_id + 1].ca_qpos_proj = None
 
@@ -211,39 +216,56 @@ class TransformerDecoder(nn.Module):
                 pos: Optional[Tensor] = None,
                 refpoints_unsigmoid: Optional[Tensor] = None, # num_queries, bs, 2
                 ):
-        output = tgt
+        output = tgt  #torch.Size([300, bs, 256]) 全0
 
         intermediate = []
-        reference_points = refpoints_unsigmoid.sigmoid()
+        reference_points = refpoints_unsigmoid.sigmoid() # torch.Size([300, bs, 4])
         ref_points = [reference_points]
 
         # import ipdb; ipdb.set_trace()        
 
         for layer_id, layer in enumerate(self.layers):
-            obj_center = reference_points[..., :self.query_dim]     # [num_queries, batch_size, 2]
+            obj_center = reference_points[..., :self.query_dim]     # [num_queries, batch_size, 4]
             # get sine embedding for the query vector
-            query_sine_embed = gen_sineembed_for_position(obj_center, self.d_model)  
-            query_pos = self.ref_point_head(query_sine_embed) 
+            query_sine_embed = gen_sineembed_for_position(obj_center, self.d_model)  #query_sine_embed   torch.Size([300, bs, 512])
+            query_pos = self.ref_point_head(query_sine_embed) #torch.Size([300, bs, 256])
 
             # For the first decoder layer, we do not apply transformation over p_s
             if self.query_scale_type != 'fix_elewise':
                 if layer_id == 0:
                     pos_transformation = 1
                 else:
-                    pos_transformation = self.query_scale(output)
+                    pos_transformation = self.query_scale(output) # [300,bs,256]
             else:
                 pos_transformation = self.query_scale.weight[layer_id]
 
             # apply transformation
-            query_sine_embed = query_sine_embed[...,:self.d_model] * pos_transformation
-
+            #pos = torch.cat((pos_y, pos_x, pos_w, pos_h), dim=2) 前256维是yx，后256维是wh，在这里只取了yx的embed
+            query_sine_embed = query_sine_embed[...,:self.d_model] * pos_transformation  #query_sine_embed  torch.Size([300, bs, 256])
+            query_sine_embed2 = query_sine_embed.clone()
             # modulated HW attentions
             if self.modulate_hw_attn:
-                refHW_cond = self.ref_anchor_head(output).sigmoid() # nq, bs, 2
-                query_sine_embed[..., self.d_model // 2:] *= (refHW_cond[..., 0] / obj_center[..., 2]).unsqueeze(-1)
-                query_sine_embed[..., :self.d_model // 2] *= (refHW_cond[..., 1] / obj_center[..., 3]).unsqueeze(-1)
+                # 基于当前层的 output 生成 x, y 坐标的调制参数(向量)，对应于 paper 公式中的 w_{q,ref} & h_{q,ref}
+                refHW_cond = self.ref_anchor_head(output).sigmoid() # nq, bs, 2 torch.Size([300, bs, 2])
 
+                # ref_w = refHW_cond[..., 0] #torch.Size([300, bs])  
+                # ref_h = refHW_cond[..., 1] #torch.Size([300, bs])  
 
+                # anchor_w = obj_center[..., 2] #torch.Size([300, bs])  
+                # anchor_h = obj_center[..., 3] #torch.Size([300, bs])  
+
+                # factor_x = (ref_w/anchor_w).unsqueeze(-1)
+                # query_sine_embed2[..., self.d_model // 2:] *= factor_x
+                # factor_y = (ref_h/anchor_h).unsqueeze(-1)
+                # query_sine_embed2[..., :self.d_model // 2] *= factor_y
+                
+                
+                query_sine_embed[..., self.d_model // 2:] *= (refHW_cond[..., 0] / obj_center[..., 2]).unsqueeze(-1) # x
+                query_sine_embed[..., :self.d_model // 2] *= (refHW_cond[..., 1] / obj_center[..., 3]).unsqueeze(-1) # y
+
+                # a = query_sine_embed2.equal(query_sine_embed)
+
+            # output torch.Size([300, bs, 256])
             output = layer(output, memory, tgt_mask=tgt_mask,
                            memory_mask=memory_mask,
                            tgt_key_padding_mask=tgt_key_padding_mask,
@@ -256,19 +278,26 @@ class TransformerDecoder(nn.Module):
                 if self.bbox_embed_diff_each_layer:
                     tmp = self.bbox_embed[layer_id](output)
                 else:
-                    tmp = self.bbox_embed(output)
+                    tmp = self.bbox_embed(output) #torch.Size([300, bs, 4])
                 # import ipdb; ipdb.set_trace()
-                tmp[..., :self.query_dim] += inverse_sigmoid(reference_points)
+                tmp[..., :self.query_dim] += inverse_sigmoid(reference_points) #torch.Size([300, bs 4])
                 new_reference_points = tmp[..., :self.query_dim].sigmoid()
                 if layer_id != self.num_layers - 1:
-                    ref_points.append(new_reference_points)
+                    ref_points.append(new_reference_points) # 第一次循环 refo_points队列长度2 [最初的ref points，第一层输出修正的ref points]
                 reference_points = new_reference_points.detach()
+                #最后一层的new_reference_points 没有添加到ref_points
 
-            if self.return_intermediate:
+            #默认True
+            if self.return_intermediate:    
                 intermediate.append(self.norm(output))
 
+
+        # intermediate_last = intermediate[-1]
+        # output = self.norm(output)
+        # flag = intermediate_last.equal(output)
+
         if self.norm is not None:
-            output = self.norm(output)
+            output = self.norm(output) # torch.Size([300, bs, 256])
             if self.return_intermediate:
                 intermediate.pop()
                 intermediate.append(output)
@@ -388,14 +417,14 @@ class TransformerDecoderLayer(nn.Module):
         if not self.rm_self_attn_decoder:
             # Apply projections here
             # shape: num_queries x batch_size x 256
-            q_content = self.sa_qcontent_proj(tgt)      # target is the input of the first decoder layer. zero by default.
-            q_pos = self.sa_qpos_proj(query_pos)
-            k_content = self.sa_kcontent_proj(tgt)
+            q_content = self.sa_qcontent_proj(tgt)      # torch.Size([300, bs, 256]) target is the input of the first decoder layer. zero by default.
+            q_pos = self.sa_qpos_proj(query_pos)        # torch.Size([300, bs, 256])
+            k_content = self.sa_kcontent_proj(tgt)  
             k_pos = self.sa_kpos_proj(query_pos)
             v = self.sa_v_proj(tgt)
 
-            num_queries, bs, n_model = q_content.shape
-            hw, _, _ = k_content.shape
+            num_queries, bs, n_model = q_content.shape # torch.Size([300, bs, 256])
+            hw, _, _ = k_content.shape  #hw=300
 
             q = q_content + q_pos
             k = k_content + k_pos
@@ -410,32 +439,32 @@ class TransformerDecoderLayer(nn.Module):
         # ========== Begin of Cross-Attention =============
         # Apply projections here
         # shape: num_queries x batch_size x 256
-        q_content = self.ca_qcontent_proj(tgt)
-        k_content = self.ca_kcontent_proj(memory)
+        q_content = self.ca_qcontent_proj(tgt) # 300 bs 256
+        k_content = self.ca_kcontent_proj(memory) # torch.Size([888, bs, 256])
         v = self.ca_v_proj(memory)
 
         num_queries, bs, n_model = q_content.shape
         hw, _, _ = k_content.shape
 
-        k_pos = self.ca_kpos_proj(pos)
+        k_pos = self.ca_kpos_proj(pos) # torch.Size([888, bs, 256])  这个pos是给backbone特征图的，对应位置编码函数1
 
         # For the first decoder layer, we concatenate the positional embedding predicted from 
         # the object query (the positional embedding) into the original query (key) in DETR.
         if is_first or self.keep_query_pos:
-            q_pos = self.ca_qpos_proj(query_pos)
+            q_pos = self.ca_qpos_proj(query_pos) #torch.Size([300, bs, 256])
             q = q_content + q_pos
             k = k_content + k_pos
         else:
             q = q_content
             k = k_content
 
-        q = q.view(num_queries, bs, self.nhead, n_model//self.nhead)
-        query_sine_embed = self.ca_qpos_sine_proj(query_sine_embed)
-        query_sine_embed = query_sine_embed.view(num_queries, bs, self.nhead, n_model//self.nhead)
-        q = torch.cat([q, query_sine_embed], dim=3).view(num_queries, bs, n_model * 2)
-        k = k.view(hw, bs, self.nhead, n_model//self.nhead)
+        q = q.view(num_queries, bs, self.nhead, n_model//self.nhead) # torch.Size([300, bs, 8, 32])
+        query_sine_embed = self.ca_qpos_sine_proj(query_sine_embed) #torch.Size([300, bs, 256])
+        query_sine_embed = query_sine_embed.view(num_queries, bs, self.nhead, n_model//self.nhead) # torch.Size([300, bs, 8, 32])
+        q = torch.cat([q, query_sine_embed], dim=3).view(num_queries, bs, n_model * 2) # torch.Size([300, bs, 512])
+        k = k.view(hw, bs, self.nhead, n_model//self.nhead) # torch.Size([888, bs, 8, 32])
         k_pos = k_pos.view(hw, bs, self.nhead, n_model//self.nhead)
-        k = torch.cat([k, k_pos], dim=3).view(hw, bs, n_model * 2)
+        k = torch.cat([k, k_pos], dim=3).view(hw, bs, n_model * 2) # torch.Size([888, bs, 512])
 
         tgt2 = self.cross_attn(query=q,
                                    key=k,

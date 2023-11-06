@@ -50,7 +50,7 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
     Returns:
         Loss tensor
     """
-    prob = inputs.sigmoid()
+    prob = inputs.sigmoid()  #torch.Size([bs, 300, 91])
     ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
     p_t = prob * targets + (1 - prob) * (1 - targets)
     loss = ce_loss * ((1 - p_t) ** gamma)
@@ -65,7 +65,11 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
 
 class DABDETR(nn.Module):
     """ This is the DAB-DETR module that performs object detection """
-    def __init__(self, backbone, transformer, num_classes, num_queries, num_dec_layers,
+    def __init__(self, backbone, 
+                    transformer, 
+                    num_classes, 
+                    num_queries, 
+                    num_dec_layers,
                     aux_loss=False, 
                     iter_update=True,
                     query_dim=4, 
@@ -103,7 +107,7 @@ class DABDETR(nn.Module):
         self.query_dim = query_dim
         assert query_dim in [2, 4]
 
-        self.refpoint_embed = nn.Embedding(num_queries, query_dim)
+        self.refpoint_embed = nn.Embedding(num_queries, query_dim) #Embedding(300, 4)
         self.random_refpoints_xy = random_refpoints_xy
         if random_refpoints_xy:
             # import ipdb; ipdb.set_trace()
@@ -119,7 +123,7 @@ class DABDETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.iter_update = iter_update
-
+        #默认是True
         if self.iter_update:
             self.transformer.decoder.bbox_embed = self.bbox_embed
 
@@ -160,17 +164,18 @@ class DABDETR(nn.Module):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.backbone(samples)
 
-        src, mask = features[-1].decompose()
+        src, mask = features[-1].decompose() #[bs,2048,h,w]  .decompose()在nestedtensor里面定义，返回tensor和mask，形状一样
         assert mask is not None
         # default pipeline
-        embedweight = self.refpoint_embed.weight
+        embedweight = self.refpoint_embed.weight #[300,4]
         hs, reference = self.transformer(self.input_proj(src), mask, embedweight, pos[-1])
-        
+        # hs torch.Size([6, bs, 300, 256]) 6应该是6层
+        # references torch.Size([6, bs, 300, 4])
         
         
         if not self.bbox_embed_diff_each_layer:
-            reference_before_sigmoid = inverse_sigmoid(reference)
-            tmp = self.bbox_embed(hs)
+            reference_before_sigmoid = inverse_sigmoid(reference) # torch.Size([6, bs, 300, 4])
+            tmp = self.bbox_embed(hs) #torch.Size([6, bs, 300, 4])
             tmp[..., :self.query_dim] += reference_before_sigmoid
             outputs_coord = tmp.sigmoid()
         else:
@@ -183,9 +188,9 @@ class DABDETR(nn.Module):
                 outputs_coords.append(outputs_coord)
             outputs_coord = torch.stack(outputs_coords)
 
-        outputs_class = self.class_embed(hs)
+        outputs_class = self.class_embed(hs)  # torch.Size([6, bs, 300, 91])
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
-        if self.aux_loss:
+        if self.aux_loss:      #默认使用
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
         return out
 
@@ -226,19 +231,77 @@ class SetCriterion(nn.Module):
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
         assert 'pred_logits' in outputs
-        src_logits = outputs['pred_logits']
+        src_logits = outputs['pred_logits'] # torch.Size([bs, 300, 91])
 
-        idx = self._get_src_permutation_idx(indices)
+        idx = self._get_src_permutation_idx(indices)  
+        #(tensor([0, 0, 1, 1, 2, 3]), tensor([ 14, 279,  95, 129, 209, 221]))
+
+        # targets 是个bs长度的list， 比如第一个标签是
+        # {'boxes': tensor([[0.4978, 0.4835, 0.7010, 0.7377],[0.7455, 0.8129, 0.5090, 0.1191]], device='cuda:0'), 
+        # 'labels': tensor([ 1, 35], device='cuda:0'), 
+        # 'image_id': tensor([46038], device='cuda:0'), 
+        # 'area': tensor([182474.8438,  20575.4863], device='cuda:0'), 
+        # 'iscrowd': tensor([0, 0], device='cuda:0'), 
+        # 'orig_size': tensor([425, 640], device='cuda:0'),  原图大小
+        # 'size': tensor([ 768, 1156], device='cuda:0')} 增强之后的大小
+        
+        #indices [(tensor([ 14, 279]), tensor([0, 1])),      前面是query index 后面是对应的label的index
+        # (tensor([ 95, 129]), tensor([1, 0])), 
+        # (tensor([209]), tensor([0])), 
+        # (tensor([221]), tensor([0]))]
+
+        # 对于第一个 target，即 {'labels': tensor([ 1, 35], device='cuda:0'), ...}，和第一个 indices，即 (tensor([ 14, 279]), tensor([0, 1]))：
+
+        # t["labels"][J] 会是 [1, 35][[0, 1]] = [1, 35]
+        # 对于第二个 target，即 {'labels': tensor([ 1, 43], device='cuda:0'), ...}，和第二个 indices，即 (tensor([ 95, 129]), tensor([1, 0]))：
+
+        # t["labels"][J] 会是 [1, 43][[1, 0]] = [43, 1]
+        # 对于第三个 target，即 {'labels': tensor([22], device='cuda:0'), ...}，和第三个 indices，即 (tensor([209]), tensor([0]))：
+
+        # t["labels"][J] 会是 [22][[0]] = [22]
+        # 对于第四个 target，即 {'labels': tensor([38], device='cuda:0'), ...}，和第四个 indices，即 (tensor([221]), tensor([0]))：
+
+        # t["labels"][J] 会是 [38][[0]] = [38]
+        # 最后，这些都会被拼接在一起，形成一个新的张量：[1, 35, 43, 1, 22, 38]
+        
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+
+        # target_classes [bs, 300]         全都是91    也就是创造了个全部都是no object类的tensor
+        # target_classes = [
+        #                     [91, 91, 91, ..., 91],  # 第1个样本
+        #                     [91, 91, 91, ..., 91],  # 第2个样本
+        #                     [91, 91, 91, ..., 91],  # 第3个样本
+        #                     [91, 91, 91, ..., 91],  # 第4个样本
+        #                 ]
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
                                     dtype=torch.int64, device=src_logits.device)
+        
+        # idx 实际上是一个元组，其中包含两个一维张量：(tensor([0, 0, 1, 1, 2, 3]), tensor([ 14, 279, 95, 129, 209, 221]))。
+        # 第一个张量 tensor([0, 0, 1, 1, 2, 3]) 指定了 target_classes 张量中需要更新的行。
+        # 第二个张量 tensor([ 14, 279, 95, 129, 209, 221]) 指定了 target_classes 张量中需要更新的列。
+        # 这样，target_classes[idx] = target_classes_o 这行代码会更新 target_classes 张量中特定行和列的值，具体如下：
+        # target_classes[0, 14] 将被设置为 1
+        # target_classes[0, 279] 将被设置为 35
+        # target_classes[1, 95] 将被设置为 43
+        # target_classes[1, 129] 将被设置为 1
+        # target_classes[2, 209] 将被设置为 22
+        # target_classes[3, 221] 将被设置为 38
         target_classes[idx] = target_classes_o
 
+        # 先创造[bs,300,92]的全0 tensor
         target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2]+1],
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
-        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
+        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1) # torch.Size([4, 300, 92])
+        # tensor([[[0., 0., 0.,  ..., 0., 0., 1.],
+        #  [0., 0., 0.,  ..., 0., 0., 1.],
+        #  [0., 0., 0.,  ..., 0., 0., 1.],
+        #  ...,
 
-        target_classes_onehot = target_classes_onehot[:,:,:-1]
+        #  [0., 0., 0.,  ..., 0., 0., 1.],
+        #  [0., 0., 0.,  ..., 0., 0., 1.],
+        #  [0., 0., 0.,  ..., 0., 0., 1.]]], device='cuda:0')
+
+        target_classes_onehot = target_classes_onehot[:,:,:-1] # torch.Size([4, 300, 91])
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
 
@@ -319,8 +382,40 @@ class SetCriterion(nn.Module):
         return losses
 
     def _get_src_permutation_idx(self, indices):
+        '''当然，我会尽力让解释尽可能简单和清晰。`_get_src_permutation_idx`这个函数的主要目的是为了创建两个张量：`batch_idx`和`src_idx`。这两个张量之后会用于从模型的预测中选择与真实目标（ground truth）匹配的部分。
+
+        ### 输入参数
+
+        - `indices`：这是一个元组列表。每个元组表示一个图像中与目标匹配的预测框的索引。在你给出的示例中，`indices`包含4个元组，每个元组有两个数组。
+            - 第一个数组（例如`array([ 14, 279])`）是模型预测的框（proposals）的索引。
+            - 第二个数组（例如`array([0, 1])`）是与这些预测匹配的真实目标（ground truth）的索引。
+
+        ### 输出参数
+
+        - `batch_idx`：这个张量告诉我们每个预测框属于哪个图像。
+        - `src_idx`：这个张量包含了用于重排预测框的索引。
+
+        ### 实现步骤
+
+        1. **生成`batch_idx`**
+            - 首先，我们用`enumerate(indices)`遍历所有图像及其对应的预测索引。
+            - 对于每张图像（索引为`i`），我们创建一个新的张量，这个张量的所有元素都是`i`，并且其形状与`src`相同。
+            - 最后，我们使用`torch.cat`将这些张量连接在一起。
+
+            举例来说，如果第一张图像（索引为0）有两个与之匹配的预测，那么它对应的部分`batch_idx`就会是`[0, 0]`。
+
+        2. **生成`src_idx`**
+            - 这个很简单，我们只需将所有图像的预测索引（`src`）连接在一起。
+        
+            在你给出的例子中，第一个图像的预测索引是`[14, 279]`，第二个图像的预测索引是`[95, 129]`，等等。因此，`src_idx`将是`[14, 279, 95, 129, 209, 221]`。
+
+        最后，函数返回这两个张量：`batch_idx`和`src_idx`。
+
+        torch.full_like(src, i) 应该是把 src复制i次
+
+        '''
         # permute predictions following indices
-        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
+        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])  # tensor([0, 0, 1, 1, 2, 3]) 图片0有两个物体 图片1也有两个物体
         src_idx = torch.cat([src for (src, _) in indices])
         return batch_idx, src_idx
 
@@ -350,7 +445,7 @@ class SetCriterion(nn.Module):
              return_indices: used for vis. if True, the layer0-5 indices will be returned as well.
 
         """
-
+        # outputs == {pred_logits:Size([bs, 300, 91], pred_boxes=[bs,300,4], aux_outputs:[{pred_logits:, pred_boxex}, {...}])}
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -364,7 +459,7 @@ class SetCriterion(nn.Module):
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_avail_and_initialized():
             torch.distributed.all_reduce(num_boxes)
-        num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
+        num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()  #4张图片共6个物体
 
         # Compute all the requested losses
         losses = {}
