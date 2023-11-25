@@ -1,58 +1,48 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+# Copyright (c) Institute of Information Processing, Leibniz University Hannover.
+
 """
-COCO dataset which returns image_id for evaluation.
+dataset (COCO-like) which returns image_id for evaluation.
 
 Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references/detection/coco_utils.py
 """
-if __name__=="__main__":
-    # for debug only
-    import os, sys
-    sys.path.append(os.path.dirname(sys.path[0]))
-
-import json
 from pathlib import Path
-import random
-import os
-
+import json
 import torch
 import torch.utils.data
 import torchvision
 from pycocotools import mask as coco_mask
 
 import datasets.transforms as T
-from util.box_ops import box_cxcywh_to_xyxy, box_iou
-
-__all__ = ['build']
-
 
 class CocoDetection(torchvision.datasets.CocoDetection):
-    def __init__(self, img_folder, ann_file, transforms, return_masks, aux_target_hacks=None):
+    def __init__(self, img_folder, ann_file, transforms, return_masks):
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
-        self.aux_target_hacks = aux_target_hacks
+
+        #TODO load relationship
+        with open('/'.join(ann_file.split('/')[:-1])+'/rel.json', 'r') as f:
+            all_rels = json.load(f)
+        if 'train' in ann_file:
+            self.rel_annotations = all_rels['train']
+        elif 'val' in ann_file:
+            self.rel_annotations = all_rels['val']
+        else:
+            self.rel_annotations = all_rels['test']
+
+        self.rel_categories = all_rels['rel_categories']
 
     def __getitem__(self, idx):
-        """
-        Output:
-            - target: dict of multiple items
-                - boxes: Tensor[num_box, 4]. \
-                    Init type: x0,y0,x1,y1. unnormalized data.
-                    Final type: cx,cy,w,h. normalized data. 
-        """
-        try:
-            img, target = super(CocoDetection, self).__getitem__(idx)
-        except:
-            print("Error idx: {}".format(idx))
-            idx += 1
-            img, target = super(CocoDetection, self).__getitem__(idx)
+        img, target = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
-        target = {'image_id': image_id, 'annotations': target}
+        rel_target = self.rel_annotations[str(image_id)]
+
+        target = {'image_id': image_id, 'annotations': target, 'rel_annotations': rel_target}
+
         img, target = self.prepare(img, target)
-        
         if self._transforms is not None:
             img, target = self._transforms(img, target)
-
         return img, target
 
 
@@ -117,6 +107,9 @@ class ConvertCocoPolysToMask(object):
         if keypoints is not None:
             keypoints = keypoints[keep]
 
+        # TODO add relation gt in the target
+        rel_annotations = target['rel_annotations']
+
         target = {}
         target["boxes"] = boxes
         target["labels"] = classes
@@ -134,147 +127,65 @@ class ConvertCocoPolysToMask(object):
 
         target["orig_size"] = torch.as_tensor([int(h), int(w)])
         target["size"] = torch.as_tensor([int(h), int(w)])
+        # TODO add relation gt in the target
+        target['rel_annotations'] = torch.tensor(rel_annotations)
 
         return image, target
 
 
-def make_coco_transforms(image_set, fix_size=False, strong_aug=False, args=None):
+def make_coco_transforms(image_set):
 
     normalize = T.Compose([
         T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    # config the params for data aug
     scales = [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
-    max_size = 1333
-    scales2_resize = [400, 500, 600]
-    scales2_crop = [384, 600]
-    
-    # # update args from config files
-    # scales = getattr(args, 'data_aug_scales', scales)
-    # max_size = getattr(args, 'data_aug_max_size', max_size)
-    # scales2_resize = getattr(args, 'data_aug_scales2_resize', scales2_resize)
-    # scales2_crop = getattr(args, 'data_aug_scales2_crop', scales2_crop)
-
-    # # resize them
-    # data_aug_scale_overlap = getattr(args, 'data_aug_scale_overlap', None)
-    # if data_aug_scale_overlap is not None and data_aug_scale_overlap > 0:
-    #     data_aug_scale_overlap = float(data_aug_scale_overlap)
-    #     scales = [int(i*data_aug_scale_overlap) for i in scales]
-    #     max_size = int(max_size*data_aug_scale_overlap)
-    #     scales2_resize = [int(i*data_aug_scale_overlap) for i in scales2_resize]
-    #     scales2_crop = [int(i*data_aug_scale_overlap) for i in scales2_crop]
-
-
-    # datadict_for_print = {
-    #     'scales': scales,
-    #     'max_size': max_size,
-    #     'scales2_resize': scales2_resize,
-    #     'scales2_crop': scales2_crop
-    # }
-    # print("data_aug_params:", json.dumps(datadict_for_print, indent=2))
-        
 
     if image_set == 'train':
-        if fix_size:
-            return T.Compose([
-                T.RandomHorizontalFlip(),
-                T.RandomResize([(max_size, max(scales))]),
-                normalize,
-            ])
-
-        if strong_aug:
-            import datasets.sltransform as SLT
-            
-            return T.Compose([
-                T.RandomHorizontalFlip(),
-                T.RandomSelect(
-                    T.RandomResize(scales, max_size=max_size),
-                    T.Compose([
-                        T.RandomResize(scales2_resize),
-                        T.RandomSizeCrop(*scales2_crop),
-                        T.RandomResize(scales, max_size=max_size),
-                    ])
-                ),
-                SLT.RandomSelectMulti([
-                    SLT.RandomCrop(),
-                    # SLT.Rotate(10),
-                    SLT.LightingNoise(),
-                    SLT.AdjustBrightness(2),
-                    SLT.AdjustContrast(2),
-                ]),              
-                # # for debug only  
-                # SLT.RandomCrop(),
-                # SLT.LightingNoise(),
-                # SLT.AdjustBrightness(2),
-                # SLT.AdjustContrast(2),
-                # SLT.Rotate(10),
-                normalize,
-            ])
-        
         return T.Compose([
             T.RandomHorizontalFlip(),
             T.RandomSelect(
-                T.RandomResize(scales, max_size=max_size),
+                T.RandomResize(scales, max_size=1333),
                 T.Compose([
-                    T.RandomResize(scales2_resize),
-                    T.RandomSizeCrop(*scales2_crop),
-                    T.RandomResize(scales, max_size=max_size),
+                    T.RandomResize([400, 500, 600]),
+                    #T.RandomSizeCrop(384, 600), # TODO: cropping causes that some boxes are dropped then no tensor in the relation part! What should we do?
+                    T.RandomResize(scales, max_size=1333),
                 ])
             ),
-            normalize,
-        ])
+            normalize])
 
-    if image_set in ['val', 'test']:
-
-        if os.environ.get("GFLOPS_DEBUG_SHILONG", False) == 'INFO':
-            print("Under debug mode for flops calculation only!!!!!!!!!!!!!!!!")
-            return T.Compose([
-                T.ResizeDebug((1280, 800)),
-                normalize,
-            ])   
-
+    if image_set == 'val':
         return T.Compose([
-            T.RandomResize([max(scales)], max_size=max_size),
+            T.RandomResize([800], max_size=1333),
             normalize,
         ])
-
-
 
     raise ValueError(f'unknown {image_set}')
 
 
+def make_coco_transforms_debug(image_set):
+    normalize = T.Compose([
+        T.ToTensor(),
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    return T.Compose([
+                T.ResizeDebug((1280, 800)),
+                normalize,
+            ])  
+
 def build(image_set, args):
-    root = Path(args.coco_path)
-    # assert root.exists(), f'provided COCO path {root} does not exist'
-    mode = 'instances'
-    PATHS = {
-        "train": (root / "train2017", root / "annotations" / f'{mode}_train2017.json'),
-        "train_reg": (root / "train2017", root / "annotations" / f'{mode}_train2017.json'),
-        "val": (root / "val2017", root / "annotations" / f'{mode}_val2017.json'),
-        "eval_debug": (root / "val2017", root / "annotations" / f'{mode}_val2017.json'),
-        "test": (root / "test2017", root / "annotations" / 'image_info_test-dev2017.json' ),
-    }
 
-    # add some hooks to datasets
-    aux_target_hacks_list = None
-    img_folder, ann_file = PATHS[image_set]
+    ann_path = args.ann_path
+    img_folder = args.img_folder
 
-    try:
-        strong_aug = args.strong_aug
-    except:
-        strong_aug = False
+    if image_set == 'train':
+        ann_file = ann_path + 'train.json'
+    elif image_set == 'val':
+        if args.eval:
+            ann_file = ann_path + 'test.json'
+        else:
+            ann_file = ann_path + 'val.json'
 
-    try:
-        fix_size = args.fix_size
-    except:
-        fix_size = False
-    dataset = CocoDetection(img_folder, ann_file, 
-            transforms=make_coco_transforms(image_set, fix_size=fix_size, strong_aug=strong_aug, args=args), 
-            return_masks=args.masks,
-            aux_target_hacks=aux_target_hacks_list,
-        )
-
+    dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms_debug(image_set), return_masks=False)
     return dataset
-

@@ -20,20 +20,18 @@ from util.misc import all_gather
 
 
 class CocoEvaluator(object):
-    def __init__(self, coco_gt, iou_types, useCats=True):
+    def __init__(self, coco_gt, iou_types):
         assert isinstance(iou_types, (list, tuple))
-        coco_gt = copy.deepcopy(coco_gt)
+        #coco_gt = copy.deepcopy(coco_gt)
         self.coco_gt = coco_gt
 
         self.iou_types = iou_types
         self.coco_eval = {}
         for iou_type in iou_types:
             self.coco_eval[iou_type] = COCOeval(coco_gt, iouType=iou_type)
-            self.coco_eval[iou_type].useCats = useCats
 
         self.img_ids = []
         self.eval_imgs = {k: [] for k in iou_types}
-        self.useCats = useCats
 
     def update(self, predictions):
         img_ids = list(np.unique(list(predictions.keys())))
@@ -50,7 +48,6 @@ class CocoEvaluator(object):
 
             coco_eval.cocoDt = coco_dt
             coco_eval.params.imgIds = list(img_ids)
-            coco_eval.params.useCats = self.useCats
             img_ids, eval_imgs = evaluate(coco_eval)
 
             self.eval_imgs[iou_type].append(eval_imgs)
@@ -87,30 +84,20 @@ class CocoEvaluator(object):
 
             boxes = prediction["boxes"]
             boxes = convert_to_xywh(boxes).tolist()
-            if not isinstance(prediction["scores"], list):
-                scores = prediction["scores"].tolist()
-            else:
-                scores = prediction["scores"]
-            if not isinstance(prediction["labels"], list):
-                labels = prediction["labels"].tolist()
-            else:
-                labels = prediction["labels"]
+            scores = prediction["scores"].tolist()
+            labels = prediction["labels"].tolist()
 
-        
-            try:
-                coco_results.extend(
-                    [
-                        {
-                            "image_id": original_id,
-                            "category_id": labels[k],
-                            "bbox": box,
-                            "score": scores[k],
-                        }
-                        for k, box in enumerate(boxes)
-                    ]
-                )
-            except:
-                import ipdb; ipdb.set_trace()
+            coco_results.extend(
+                [
+                    {
+                        "image_id": original_id,
+                        "category_id": labels[k],
+                        "bbox": box,
+                        "score": scores[k],
+                    }
+                    for k, box in enumerate(boxes)
+                ]
+            )
         return coco_results
 
     def prepare_for_coco_segmentation(self, predictions):

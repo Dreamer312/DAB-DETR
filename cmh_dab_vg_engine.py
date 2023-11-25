@@ -7,20 +7,17 @@ import math
 import os
 import sys
 from typing import Iterable
-
-from util.utils import slprint, to_device
-
-import torch
-
+from util.utils import to_device
 import util.misc as utils
-from datasets_dab.coco_eval import CocoEvaluator
-from datasets_dab.panoptic_eval import PanopticEvaluator
+import torch
+from datasets.coco_eval import CocoEvaluator
+#from datasets.panoptic_eval import PanopticEvaluator
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0, 
-                    wo_class_error=False, lr_scheduler=None, args=None, logger=None, ema_m=None):
+                    wo_class_error=False, lr_scheduler=None, args=None, logger=None, ema_m=None, wandb_logger=None):
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
 
     try:
@@ -41,7 +38,18 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header, logger=logger):
 
         samples = samples.to(device)
+
+
+
+
+
+        for target in targets:
+            # 如果字典中存在 'rel_annotations' 键，则移除它
+            if 'rel_annotations' in target:
+                target.pop('rel_annotations')
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        # print(targets)
+        # assert(0)
 
         with torch.cuda.amp.autocast(enabled=args.amp):
             if need_tgt_for_training:
@@ -91,6 +99,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         if 'class_error' in loss_dict_reduced:
             metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+
+        if  int(os.environ['LOCAL_RANK']) == 0:
+            wandb_logger.log({
+                "loss": loss_value,
+                "class_error": loss_dict_reduced['class_error'],
+                "lr": optimizer.param_groups[0]["lr"],
+                **loss_dict_reduced_scaled,
+                **loss_dict_reduced_unscaled
+            })
 
         _cnt += 1
         if args.debug:

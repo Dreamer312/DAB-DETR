@@ -40,7 +40,6 @@ def crop(image, target, region):
         target['masks'] = target['masks'][:, i:i + h, j:j + w]
         fields.append("masks")
 
-
     # remove elements for which the boxes or masks that have zero area
     if "boxes" in target or "masks" in target:
         # favor boxes selection when defining which elements to keep
@@ -144,14 +143,6 @@ def pad(image, target, padding):
     if "masks" in target:
         target['masks'] = torch.nn.functional.pad(target['masks'], (0, padding[0], 0, padding[1]))
     return padded_image, target
-
-
-class ResizeDebug(object):
-    def __init__(self, size):
-        self.size = size
-
-    def __call__(self, img, target):
-        return resize(img, target, self.size)
 
 
 class RandomCrop(object):
@@ -283,3 +274,12 @@ class Compose(object):
             format_string += "    {0}".format(t)
         format_string += "\n)"
         return format_string
+
+
+
+class ResizeDebug(object):
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, img, target):
+        return resize(img, target, self.size)
